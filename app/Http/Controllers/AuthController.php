@@ -6,97 +6,112 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
-    /**
-     * Show the login form.
-     */
     public function showLogin()
     {
         if (Auth::check()) {
-            return redirect()->intended('/');
+            return redirect()->route('home');
         }
-
         return view('auth.login');
     }
 
-    /**
-     * Handle an authentication attempt.
-     */
     public function login(Request $request)
     {
         $credentials = $request->validate([
-            'email' => ['required', 'string', 'email'],
-            'password' => ['required', 'string'],
+            'email' => 'required|email',
+            'password' => 'required',
         ]);
 
-        $credentials['email'] = strtolower(trim($credentials['email']));
-
         if (Auth::attempt($credentials, $request->boolean('remember'))) {
+            $user = Auth::user();
+
+            if ($user->isSuspended()) {
+                Auth::logout();
+                $request->session()->invalidate();
+                $request->session()->regenerateToken();
+
+                return back()->withErrors([
+                    'email' => 'Your account has been suspended. Please contact the administrator.',
+                ]);
+            }
+
             $request->session()->regenerate();
 
-            return redirect()->intended('/')->with('success', 'Logged in successfully! Welcome back, ' . Auth::user()->name . '.');
+            if ($user->isAdmin()) {
+                return redirect()->intended(route('admin.dashboard'))
+                    ->with('success', 'Welcome to Admin Dashboard, ' . $user->name . '!');
+            }
+
+            return redirect()->intended(route('home'))
+                ->with('success', 'Welcome back, ' . $user->name . '!');
         }
 
-        return back()
-            ->withInput($request->only('email', 'remember'))
-            ->withErrors([
-                'email' => 'These credentials do not match our records.',
-            ]);
+        return back()->withErrors([
+            'email' => 'Invalid email or password.',
+        ])->onlyInput('email');
     }
 
-    /**
-     * Show the registration form.
-     */
     public function showRegister()
     {
         if (Auth::check()) {
-            return redirect()->intended('/');
+            return redirect()->route('home');
         }
-
         return view('auth.register');
     }
 
-    /**
-     * Handle user registration.
-     */
     public function register(Request $request)
     {
         $validated = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
-            'terms' => ['accepted'],
-        ], [
-            'terms.accepted' => 'You must agree to the community sharing guidelines.',
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users,email',
+            'student_id' => 'required|string|max:50|unique:users,student_id',
+            'phone' => 'nullable|string|max:30',
+            'password' => 'required|string|min:6|confirmed',
+            'id_card_image' => 'nullable|image|mimes:jpeg,png,jpg,webp|max:4096',
         ]);
 
+        $imagePath = null;
+        if ($request->hasFile('id_card_image')) {
+            $file = $request->file('id_card_image');
+            $filename = time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+            $destination = public_path('uploads/id_cards');
+            if (!file_exists($destination)) {
+                mkdir($destination, 0777, true);
+            }
+            $file->move($destination, $filename);
+            $imagePath = 'uploads/id_cards/' . $filename;
+        }
+
         $user = User::create([
-            'name' => trim($validated['name']),
-            'email' => strtolower(trim($validated['email'])),
+            'name' => $validated['name'],
+            'email' => $validated['email'],
+            'student_id' => $validated['student_id'],
+            'phone' => $validated['phone'] ?? null,
             'password' => Hash::make($validated['password']),
+            'id_card_image' => $imagePath,
+            'is_verified' => false,
+            'role' => 'user',
+            'status' => 'active',
         ]);
 
         Auth::login($user);
         $request->session()->regenerate();
 
-        return redirect('/')
-            ->with('success', 'Account created successfully! Welcome to BorrowBox, ' . $user->name . '.');
+        return redirect()->route('home')->with(
+            'success',
+            'Registration successful! Your account is awaiting admin student verification. You can browse items while waiting.'
+        );
     }
 
-    /**
-     * Log the user out of the application.
-     */
     public function logout(Request $request)
     {
         Auth::logout();
-
         $request->session()->invalidate();
         $request->session()->regenerateToken();
 
-        return redirect('/')
-            ->with('success', 'You have been logged out successfully.');
+        return redirect()->route('home')->with('success', 'You have been logged out.');
     }
 }
+
